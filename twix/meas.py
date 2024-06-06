@@ -6,6 +6,7 @@ Inspired by and includes code from "vespa" (http://scion.duhs.duke.edu/vespa/)
 import os, struct, re, six, logging
 from datetime import datetime
 from collections import deque
+from copy import deepcopy
 
 from distutils.version import LooseVersion  # for syngo version comparision
 
@@ -22,6 +23,9 @@ from .kspace import default_counter_order, ordinal_counters, KSpaceSpec
 
 
 log = logging.getLogger(__name__)
+
+
+MIN_OFFSET = 10240
 
 
 class KSpaceSizeError(Exception):
@@ -109,6 +113,13 @@ class Meas(object):
             if six.PY3:
                 evp_data = evp_data.decode()
             evps.append((name, evp_data))
+        curr_offset = self._src_file.tell()
+        hdr_pad_size = self._offset + self._header_size - curr_offset
+        assert hdr_pad_size >= 0
+        if hdr_pad_size == 0:
+            self._hdr_padding = b""
+        else:
+            self._hdr_padding = self._src_file.read(hdr_pad_size)
 
         # TODO: handle meta data parsing
         self._meta = evps
@@ -335,7 +346,7 @@ class Meas(object):
 
         return k_spc
 
-    def write(self, dest_file):
+    def write(self, dest_file, zero_padding: bool = False):
         """Write data to a file object"""
         start = dest_file.tell()
         dest_file.write(struct.pack("<2I", self._header_size, self._n_evps))
@@ -344,19 +355,17 @@ class Meas(object):
             evp_bytes = evp_data.encode()
             dest_file.write(struct.pack("<I", len(evp_bytes)))
             dest_file.write(evp_bytes)
-        pad_len = self._offset + self._header_size - dest_file.tell()
-        assert pad_len >= 0
-        dest_file.write(b"\x00" * pad_len)
+        if zero_padding:
+            dest_file.write(b"\x00" * len(self._hdr_padding))
+        else:
+            dest_file.write(self._hdr_padding)
+        log.debug("Writing MDHs start at offset: %d", dest_file.tell())
         for mdh in self.gen_mdhs():
-            start = dest_file.tell()
-            mdh.write(dest_file)
-            padding = mdh.dma_length - (dest_file.tell() - start)
-            if padding:
-                dest_file.write(b"\x00" * padding)
+            mdh.write(dest_file, zero_padding)
         padding = self._length - (dest_file.tell() - start)
         if padding:
             log.debug("Found padding at end of data set")
-            dest_file.write(b"\x00" * pad_len)
+            dest_file.write(b"\x00" * padding)
 
 
 MEAS_RECORD = BinaryHeader(
@@ -365,8 +374,8 @@ MEAS_RECORD = BinaryHeader(
         "file_id": "I",
         "offset": "Q",
         "length": "Q",
-        "protocol": "64s",
         "patient": "64s",
+        "protocol": "64s",
     }
 )
 
@@ -439,7 +448,7 @@ class MeasFile(object):
     def get_k_space(self, meas_idx=-1, spec=None, fixed=None, bounds=None):
         return self._meas[meas_idx].get_k_space(spec, fixed, bounds)
 
-    def save(self, dest_path, prepend=None):
+    def save(self, dest_path, prepend=None, zero_padding: bool = False):
         """Save to a file, optionally prepending one or more pre scan datasets"""
         version = self._meas[0]._version
         if prepend and version == 1:
@@ -451,13 +460,15 @@ class MeasFile(object):
             elif version == 2:
                 if prepend is None:
                     prepend = []
-                meas_out = self._meas + prepend
+                meas_out = prepend + self._meas
                 # Determine offsets to data sets
                 if not prepend:
                     out_records = self._meas_records
                 else:
                     out_records = []
-                    curr_offset = len(meas_out) * MEAS_RECORD.size
+                    # Using MIN_OFFSET is probably not required but does help our output
+                    # better match the files written by the console
+                    curr_offset = max(MIN_OFFSET, 8 + (len(meas_out) * MEAS_RECORD.size))
                     for pre_meas in prepend:
                         record = dotdict(
                             {
@@ -465,27 +476,41 @@ class MeasFile(object):
                                 "file_id": pre_meas._file_id,
                                 "offset": curr_offset,
                                 "length": pre_meas._length,
-                                "protocol": pre_meas._protocol,
                                 "patient": pre_meas._patient,
+                                "protocol": pre_meas._protocol,
                             }
                         )
                         out_records.append(record)
                         curr_offset += record.length
+                        # It seems like data sets must be aligned at 512 byte boundaries
+                        tail_padding = 512 - (curr_offset % 512)
+                        if tail_padding != 512:
+                            curr_offset += tail_padding
                     for record in self._meas_records:
                         record = record.copy()
                         record.offset = curr_offset
                         curr_offset += record.length
+                        tail_padding = 512 - (curr_offset % 512)
+                        if tail_padding != 512:
+                            curr_offset += tail_padding
                         out_records.append(record)
                 # Write the file
                 out_f.write(struct.pack("<2I", 0, len(meas_out)))
                 for record in out_records:
                     MEAS_RECORD.write(record, out_f)
                 pad_len = out_records[0].offset - out_f.tell()
-                if pad_len:
-                    log.debug("Found padding between records and first data set")
-                    out_f.write(b"\x00" * pad_len)
+                assert pad_len >= 0
+                out_f.write(b"\x00" * pad_len)
                 for meas_idx, meas in enumerate(meas_out):
-                    assert out_f.tell() == out_records[meas_idx].offset
-                    meas.write(out_f)
+                    curr_offset = out_f.tell()
+                    pad_len = out_records[meas_idx].offset - curr_offset
+                    assert pad_len >= 0
+                    out_f.write(b"\x00" * pad_len)
+                    curr_offset += pad_len
+                    log.debug("Writing meas dataset at offset: %d", curr_offset)
+                    meas.write(out_f, zero_padding)
+                tail_padding = 512 - (out_f.tell() % 512)
+                if tail_padding != 512:
+                    out_f.write(b"\x00" * tail_padding)
             else:
                 raise ValueError("Invalid version")

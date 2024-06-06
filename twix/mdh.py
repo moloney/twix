@@ -1,4 +1,5 @@
 """Parsing of chunks of data from a `Meas` dataset"""
+import logging
 from dataclasses import dataclass
 from functools import reduce
 from typing import Optional, List
@@ -7,6 +8,9 @@ import numpy as np
 
 from .util import BinaryHeader, dotdict
 from .pmu import PmuData
+
+
+log = logging.getLogger(__name__)
 
 
 MDH_HEADER_V1 =  BinaryHeader({
@@ -201,6 +205,12 @@ def eval_info_is_set(eval_info_mask: int, flag_name: str) -> bool:
     return bool(eval_info_mask & (1 << EVAL_INFO_FLAGS.index(flag_name)))
 
 
+def get_dma_length(hdr):
+    first16 = hdr.dma_info & 0xFFFF
+    next8 = (hdr.dma_info & 0xFF0000) >> 16
+    return first16 + (next8 * 2**16)
+
+
 @dataclass
 class RfChannelData:
     """Complex readout data from a single channel"""
@@ -219,12 +229,14 @@ class Mdh:
         hdr: dotdict, 
         rf_data: Optional[List[RfChannelData]] = None, 
         pmu_data: Optional[PmuData] = None, 
-        version: int = 2
+        version: int = 2,
+        padding: bytes = b'',
     ):
         self.hdr = hdr
         self.rf_data = rf_data
         self.pmu_data = pmu_data
         self._version = version
+        self._padding = padding
 
     @property
     def version(self) -> int:
@@ -232,9 +244,7 @@ class Mdh:
 
     @property
     def dma_length(self) -> int:
-        first16 = self.hdr.dma_info & 0xFFFF
-        next8 = (self.hdr.dma_info & 0xFF0000) >> 16
-        return first16 + (next8 * 2**16)
+        return get_dma_length(self.hdr)
     
     @property
     def size(self) -> int:
@@ -277,24 +287,33 @@ class Mdh:
         """
         return eval_info_is_set(self.hdr.eval_info_mask, 'ACQEND')
     
-    def write(self, dest_file):
-        # TODO: Need to consider padding here in general
+    def write(self, dest_file, zero_padding: bool = False):
+        start = dest_file.tell()
         if self._version == 1:
             MDH_HEADER_V1.write(self.hdr, dest_file)
             dest_file.write(self.rf_data[0].data.tobytes())
         else:
             MDH_HEADER_V2.write(self.hdr, dest_file)
             if self.pmu_data is not None:
+                log.debug("Writing PMU data at offset: %d", dest_file.tell())
                 self.pmu_data.to_file(dest_file)
-                # TODO: Might need to pad out to dma_length
             else:
+                #log.debug("Writing %d channels at offset: %d", len(self.rf_data), dest_file.tell())
                 for chan_data in self.rf_data:
                     CHANNEL_HEADER.write(chan_data.channel_hdr, dest_file)
                     dest_file.write(chan_data.data.tobytes())
+        if self._padding:
+            log.debug("Writing padding at end of MDH at offset: %d", dest_file.tell())
+        if zero_padding:
+            dest_file.write(b"\x00" * len(self._padding))
+        else:
+            dest_file.write(self._padding)
+        assert dest_file.tell() - start == self.dma_length
     
     @classmethod
     def from_file(cls, src_file, version=2, no_data=False) -> "Mdh":
         """Construct by reading from `src_file`"""
+        start = src_file.tell()
         if version == 1:
             hdr = MDH_HEADER_V1.read(src_file)
         else:
@@ -333,4 +352,7 @@ class Mdh:
                                             dtype=np.float32,
                                             count=data_count).view(np.complex64)
                     rf_data.append(RfChannelData(chan_hdr.channel_id, data, chan_hdr))
-        return cls(hdr, rf_data, pmu_data, version)
+        pad_len = get_dma_length(hdr) - (src_file.tell() - start)
+        assert pad_len >= 0
+        padding = src_file.read(pad_len)
+        return cls(hdr, rf_data, pmu_data, version, padding)
