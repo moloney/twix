@@ -1,22 +1,17 @@
 import struct, re
 from typing import Any, Dict
 
-import six
-
 
 def _read_cstr(source_file):
     '''Read a null terminated byte string'''
     chars = []
     char = source_file.read(1)
-    end_char = six.b('\x00')
+    end_char = b'\x00'
     while char != end_char:
         chars.append(char)
         char = source_file.read(1)
-
-    out = six.b('').join(chars)
-    if six.PY3:
-        out = out.decode()
-    return out 
+    out = b''.join(chars)
+    return out.decode()
 
 
 class InvalidElemFormat(Exception):

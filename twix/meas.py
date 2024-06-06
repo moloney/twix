@@ -3,10 +3,9 @@
 Inspired by and includes code from "vespa" (http://scion.duhs.duke.edu/vespa/)
 """
 
-import os, struct, re, six, logging
+import os, struct, re, logging
 from datetime import datetime
 from collections import deque
-from copy import deepcopy
 
 from distutils.version import LooseVersion  # for syngo version comparision
 
@@ -109,9 +108,7 @@ class Meas(object):
         for evp_idx in range(self._n_evps):
             name = _read_cstr(self._src_file)
             (evp_size,) = struct.unpack("<I", self._src_file.read(4))
-            evp_data = self._src_file.read(evp_size)
-            if six.PY3:
-                evp_data = evp_data.decode()
+            evp_data = self._src_file.read(evp_size).decode()
             evps.append((name, evp_data))
         curr_offset = self._src_file.tell()
         hdr_pad_size = self._offset + self._header_size - curr_offset
