@@ -1,4 +1,4 @@
-"""Parsing of PMU (phsyio measurement unit?) data"""
+"""Parsing of PMU (phsyio measurement unit) data"""
 import logging
 from dataclasses import dataclass
 import struct
@@ -10,13 +10,6 @@ from .util import BinaryHeader, dotdict
 
 
 log = logging.getLogger(__name__)
-
-
-PACKET_HEADER = BinaryHeader({
-    'packet_size': 'I',
-    'id': '52s',
-    'swapped': 'I',
-})
 
 
 PMU_BLOCK_HEADER = BinaryHeader({
@@ -56,8 +49,7 @@ class InvalidPmuData(Exception):
 
 @dataclass
 class PmuData:
-
-    packet_hdr: dotdict
+    """Capture physio measurement unit packets"""
 
     block_hdr: dotdict
 
@@ -68,75 +60,57 @@ class PmuData:
     triggers: Dict[str, np.ndarray]
     
     padding: bytes
-
-    @property
-    def size(self) -> int:
-        return PACKET_HEADER.size + self.packet_hdr.packet_size
     
-    def to_file(self, dest_file) -> None:
-        start = dest_file.tell()
-        PACKET_HEADER.write(self.packet_hdr, dest_file)
-        if self.block_hdr:
-            PMU_BLOCK_HEADER.write(self.block_hdr, dest_file)
-            duration = self.block_hdr.duration
-            for pmu_type, set_hdr in self.set_hdrs.items():
-                PMU_SET_HEADER.write(set_hdr, dest_file)
-                n_pts = duration // set_hdr.period
-                out_data = np.empty((2, n_pts), dtype=np.uint16)
-                out_data[0, :] = self.signals[pmu_type] * 4096
-                out_data[1, :] = self.triggers[pmu_type]
-                dest_file.write(out_data.T.tobytes())
-        log.debug(
-            "Writing padding '%s' at end of PMU at offset: %d", 
-            self.padding, 
-            dest_file.tell()
-        )
-        dest_file.write(self.padding)
-        bytes_written = dest_file.tell() - start
-        assert bytes_written == self.size
+    def encode(self) -> bytes:
+        res = bytearray()
+        res.extend(PMU_BLOCK_HEADER.encode(self.block_hdr))
+        duration = self.block_hdr.duration
+        for pmu_type, set_hdr in self.set_hdrs.items():
+            res.extend(PMU_SET_HEADER.encode(set_hdr))
+            n_pts = duration // set_hdr.period
+            out_data = np.empty((2, n_pts), dtype=np.uint16)
+            out_data[0, :] = self.signals[pmu_type] * 4096
+            out_data[1, :] = self.triggers[pmu_type]
+            res.extend(out_data.T.tobytes())
+        log.debug("Writing padding '%s' at end of PMU", self.padding)
+        res.extend(self.padding)
+        return res
 
     @classmethod
-    def from_file(klass, src_file) -> "PmuData":
-        start = src_file.tell()
-        packet_hdr = PACKET_HEADER.read(src_file)
-        if not packet_hdr.id.startswith(b'PMU'):
-            padding = src_file.read(packet_hdr.packet_size)
-            return PmuData(packet_hdr, dotdict(), {}, {}, {}, padding)
-        block_hdr = PMU_BLOCK_HEADER.read(src_file)
+    def decode(klass, data: bytes) -> "PmuData":
+        offset = 0
+        next_offset = offset + PMU_BLOCK_HEADER.size
+        block_hdr = PMU_BLOCK_HEADER.decode(data[offset:next_offset])
+        offset = next_offset
         set_hdrs = {}
         signal = {}
         trigger = {}
-        bytes_left = packet_hdr.packet_size - PMU_BLOCK_HEADER.size
-        while bytes_left >= PMU_SET_HEADER.size:
-            set_hdr = PMU_SET_HEADER.read(src_file)
+        n_bytes = len(data)
+        found_end = False
+        while n_bytes - offset >= 4:
+            if struct.unpack('<I', data[offset:offset+4])[0] == PMU_MAGIC["END"]:
+                found_end = True
+                offset += 4
+                break
+            next_offset = offset + PMU_SET_HEADER.size
+            set_hdr = PMU_SET_HEADER.decode(data[offset:next_offset])
+            offset = next_offset
             try:
                 pmu_type = MAGIC_PMU[set_hdr.magic]
             except KeyError:
                 raise InvalidPmuData(f"Unknown magic number: {set_hdr.magic}")
             assert pmu_type not in set_hdrs
             set_hdrs[pmu_type] = set_hdr
-            bytes_left -= PMU_SET_HEADER.size
-            if pmu_type == "END":
-                log.debug("Got PMU 'END' with duration = %d", set_hdr.duration)
-                break
             n_pts = block_hdr.duration // set_hdr.period
-            n_bytes = n_pts * 4
-            if n_bytes > bytes_left:
-                raise InvalidPmuData("Not enough data")
-            data = np.frombuffer(src_file.read(n_bytes), dtype=np.uint16)
+            next_offset = offset + (n_pts * 4)
+            data = np.frombuffer(data[offset:next_offset], dtype=np.uint16)
+            offset = next_offset
             data = data.reshape((n_pts, 2)).T
             signal[pmu_type] = data[0].astype(float) / 4096
             trigger[pmu_type] = data[1].astype(bool)
-            bytes_left -= n_bytes
-        pad_offset = src_file.tell()
-        padding = src_file.read(
-            PACKET_HEADER.size + packet_hdr.packet_size - (src_file.tell() - start)
-        )
-        assert struct.unpack('<I', padding)[0] == PMU_MAGIC["END"]
+        if not found_end:
+            log.warning("Didn't fine END marker in PMU packet")
+        padding = data[offset:]
         if padding:
-            logging.debug(
-                "Got padding '%s' at end of PMU block at offset: %d", 
-                padding, 
-                pad_offset,
-            )
-        return klass(packet_hdr, block_hdr, set_hdrs, signal, trigger, padding)
+            logging.debug("Got padding '%s' at end of PMU block", padding)
+        return klass(block_hdr, set_hdrs, signal, trigger, padding)

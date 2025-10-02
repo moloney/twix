@@ -54,8 +54,8 @@ class BinaryHeader:
     def size(self) -> int:
         return self._size
     
-    def read(self, in_file) -> dotdict:
-        elems = struct.unpack(self._fmt, in_file.read(self._size))
+    def decode(self, data: bytes) -> dotdict:
+        elems = struct.unpack(self._fmt, data)
         res = dotdict()
         curr_idx = 0
         for name in self._spec:
@@ -66,16 +66,25 @@ class BinaryHeader:
                 res[name] = tuple(elems[curr_idx:curr_idx+mult])
             curr_idx += mult
         return res
-
-    def write(self, data, out_file) -> int:
+    
+    def encode(self, data: Dict) -> bytes:
         flat = []
         for sub_val in data.values():
             if hasattr(sub_val, '__iter__') and not isinstance(sub_val, (str, bytes)):
                 flat.extend(sub_val)
             else:
                 flat.append(sub_val)
-        return out_file.write(struct.pack(self._fmt, *flat))
+        return struct.pack(self._fmt, *flat)
+
+    def read(self, in_file) -> dotdict:
+        return self.decode(in_file.read(self._size))
+
+    def write(self, data, out_file) -> int:
+        return out_file.write(self.encode(data))
     
     def __iter__(self):
         for name in self._spec:
             yield name
+
+    def __contains__(self, val) -> bool:
+        return val in self._spec

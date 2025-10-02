@@ -7,7 +7,7 @@ from typing import Optional, List
 import numpy as np
 
 from .util import BinaryHeader, dotdict
-from .pmu import PmuData
+from .sync import SyncPacket
 
 
 log = logging.getLogger(__name__)
@@ -228,13 +228,13 @@ class Mdh:
         self, 
         hdr: dotdict, 
         rf_data: Optional[List[RfChannelData]] = None, 
-        pmu_data: Optional[PmuData] = None, 
+        sync_data: Optional[SyncPacket] = None, 
         version: int = 2,
         padding: bytes = b'',
     ):
         self.hdr = hdr
         self.rf_data = rf_data
-        self.pmu_data = pmu_data
+        self.sync_data = sync_data
         self._version = version
         self._padding = padding
 
@@ -259,7 +259,7 @@ class Mdh:
                     * (CHANNEL_HEADER.size + self.hdr.samples_in_scan * 8)
                 )
             else:
-                res += self.pmu_data.size
+                res += self.sync_data.size
         return res
             
     @property
@@ -294,9 +294,9 @@ class Mdh:
             dest_file.write(self.rf_data[0].data.tobytes())
         else:
             MDH_HEADER_V2.write(self.hdr, dest_file)
-            if self.pmu_data is not None:
+            if self.sync_data is not None:
                 log.debug("Writing PMU data at offset: %d", dest_file.tell())
-                self.pmu_data.to_file(dest_file)
+                self.sync_data.to_file(dest_file)
             else:
                 #log.debug("Writing %d channels at offset: %d", len(self.rf_data), dest_file.tell())
                 for chan_data in self.rf_data:
@@ -308,7 +308,8 @@ class Mdh:
             dest_file.write(b"\x00" * len(self._padding))
         else:
             dest_file.write(self._padding)
-        assert dest_file.tell() - start == self.dma_length
+        end = dest_file.tell()
+        assert end - start == self.dma_length
     
     @classmethod
     def from_file(cls, src_file, version=2, no_data=False) -> "Mdh":
@@ -319,7 +320,7 @@ class Mdh:
         else:
             hdr = MDH_HEADER_V2.read(src_file)
         if version == 1:
-            pmu_data = None
+            sync_data = None
             data_count = 2 * hdr.samples_in_scan
             data_size = 4 * data_count    
             if no_data:
@@ -337,9 +338,9 @@ class Mdh:
             if eval_info_is_set(hdr.eval_info_mask, "SYNCDATA"):
                 assert hdr.used_channels == 0
                 rf_data = None
-                pmu_data = PmuData.from_file(src_file)
+                sync_data = SyncPacket.from_file(src_file)
             else:
-                pmu_data = None
+                sync_data = None
                 rf_data = []
                 for _ in range(hdr.used_channels):
                     chan_hdr = CHANNEL_HEADER.read(src_file)
@@ -355,4 +356,4 @@ class Mdh:
         pad_len = get_dma_length(hdr) - (src_file.tell() - start)
         assert pad_len >= 0
         padding = src_file.read(pad_len)
-        return cls(hdr, rf_data, pmu_data, version, padding)
+        return cls(hdr, rf_data, sync_data, version, padding)
