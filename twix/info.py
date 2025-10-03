@@ -22,6 +22,7 @@ description = 'Read RF measurement files from Siemens MRI instruments '
 
 # Hard dependencies
 install_requires = ['numpy',
+                    'packaging',
                    ]
 # Add version specific dependencies
 if sys.version_info < (2, 6):

@@ -6,8 +6,10 @@ Inspired by and includes code from "vespa" (http://scion.duhs.duke.edu/vespa/)
 import os, struct, re, logging
 from datetime import datetime
 from collections import deque
+from pathlib import Path
+from typing import Iterable, Set
 
-from distutils.version import LooseVersion  # for syngo version comparision
+from packaging.version import parse as LooseVersion  # for syngo version comparision
 
 try:
     import cPickle as pickle
@@ -29,6 +31,9 @@ MIN_OFFSET = 10240
 
 class KSpaceSizeError(Exception):
     """Thrown if the computed k-space size is too small for the data"""
+
+
+DEP_TYPES = ("SensMap", "ChannelMixing", "RFMap", "B0Map")
 
 
 class Meas(object):
@@ -121,6 +126,17 @@ class Meas(object):
         # TODO: handle meta data parsing
         self._meta = evps
         return self._meta
+    
+    def get_dependency_uids(self, dep_types: Iterable[str] = DEP_TYPES) -> Set[int]:
+        """Get set of meas UID values for measurements this measurement depends on"""
+        res = set()
+        for meta_section, meta_str in self.meta:
+            for dep_type in dep_types:
+                pattern = rf'<ParamLong."l{dep_type}UID">{{\s*([0-9]+)\s*}}'
+                matches = re.findall(pattern, meta_str)
+                for match in matches:
+                    res.add(int(match))
+        return res
 
     def gen_mdhs(self, no_data: bool = False):
         """Generates MDHs (chunks of data) as stored in the file"""
@@ -387,6 +403,8 @@ class MeasFile(object):
     def __init__(self, src, version=None):
         if isinstance(src, str):
             self._src_file = open(src, "rb")
+        elif isinstance(src, Path):
+            self._src_file = src.open("rb")
         else:
             self._src_file = src
         self._meas = []
@@ -426,13 +444,18 @@ class MeasFile(object):
                 )
 
     @property
-    def n_meas(self):
+    def n_meas(self) -> int:
         """The number of measurements in this file"""
         return len(self._meas)
 
     def get_meta(self, meas_idx=-1):
         """Get meta data from the measurement at `meas_idx`"""
         return self._meas[meas_idx].meta
+    
+    def get_missing_dep_uids(self, meas_idx=-1):
+        """Get list of UIDs for missing dependencies of last measurement"""
+        # TODO: Need to get MeasUID of embedded measurements and exclude those
+        return self._meas[meas_idx].get_dependency_uids()
 
     def gen_mdhs(self, no_data=False, meas_idx=-1):
         for mdh in self._meas[meas_idx].gen_mdhs():

@@ -58,6 +58,8 @@ class PmuData:
     signals: Dict[str, np.ndarray]
 
     triggers: Dict[str, np.ndarray]
+
+    has_end_maker: bool
     
     padding: bytes
     
@@ -72,8 +74,11 @@ class PmuData:
             out_data[0, :] = self.signals[pmu_type] * 4096
             out_data[1, :] = self.triggers[pmu_type]
             res.extend(out_data.T.tobytes())
+        if self.has_end_maker:
+            res.extend(struct.pack('<I', PMU_MAGIC["END"]))
         log.debug("Writing padding '%s' at end of PMU", self.padding)
         res.extend(self.padding)
+        log.debug("After encoding PMU data is %d bytes long", len(res))
         return res
 
     @classmethod
@@ -103,14 +108,12 @@ class PmuData:
             set_hdrs[pmu_type] = set_hdr
             n_pts = block_hdr.duration // set_hdr.period
             next_offset = offset + (n_pts * 4)
-            data = np.frombuffer(data[offset:next_offset], dtype=np.uint16)
+            arr = np.frombuffer(data[offset:next_offset], dtype=np.uint16)
             offset = next_offset
-            data = data.reshape((n_pts, 2)).T
-            signal[pmu_type] = data[0].astype(float) / 4096
-            trigger[pmu_type] = data[1].astype(bool)
+            arr = arr.reshape((n_pts, 2)).T
+            signal[pmu_type] = arr[0].astype(float) / 4096
+            trigger[pmu_type] = arr[1].astype(bool)
         if not found_end:
-            log.warning("Didn't fine END marker in PMU packet")
+            log.warning("Didn't find END marker in PMU packet")
         padding = data[offset:]
-        if padding:
-            logging.debug("Got padding '%s' at end of PMU block", padding)
-        return klass(block_hdr, set_hdrs, signal, trigger, padding)
+        return klass(block_hdr, set_hdrs, signal, trigger, found_end, padding)

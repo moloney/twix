@@ -295,10 +295,9 @@ class Mdh:
         else:
             MDH_HEADER_V2.write(self.hdr, dest_file)
             if self.sync_data is not None:
-                log.debug("Writing PMU data at offset: %d", dest_file.tell())
+                assert self.rf_data is None
                 self.sync_data.to_file(dest_file)
             else:
-                #log.debug("Writing %d channels at offset: %d", len(self.rf_data), dest_file.tell())
                 for chan_data in self.rf_data:
                     CHANNEL_HEADER.write(chan_data.channel_hdr, dest_file)
                     dest_file.write(chan_data.data.tobytes())

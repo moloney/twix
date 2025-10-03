@@ -41,14 +41,17 @@ class SyncPacket:
         if self.ptype == PacketType.UNKNOWN:
             dest_file.write(self.data)
         else:
+            log.debug("Writing PMU data at offset %d", dest_file.tell())
             dest_file.write(self.data.encode())
     
     @classmethod
     def from_file(klass, src_file) -> "SyncPacket":
+        start = src_file.tell()
         hdr = PACKET_HEADER.read(src_file)
         data = src_file.read(hdr.packet_size)
         if hdr.id.startswith(b'PMU'):
             ptype = PacketType.PMU
+            log.debug("Decoding %d bytes into PMU data", hdr.packet_size)
             data = PmuData.decode(data)
         else:
             ptype = PacketType.UNKNOWN
