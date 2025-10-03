@@ -447,25 +447,29 @@ class MeasFile(object):
     def n_meas(self) -> int:
         """The number of measurements in this file"""
         return len(self._meas)
+    
+    def get_meas(self, meas_idx: int = -1) -> Meas:
+        """Get the measurment with the given index"""
+        return self._meas[meas_idx]
 
-    def get_meta(self, meas_idx=-1):
+    def get_meta(self, meas_idx: int = -1):
         """Get meta data from the measurement at `meas_idx`"""
         return self._meas[meas_idx].meta
     
-    def get_missing_dep_uids(self, meas_idx=-1):
+    def get_missing_dep_uids(self, meas_idx: int = -1):
         """Get list of UIDs for missing dependencies of last measurement"""
         # TODO: Need to get MeasUID of embedded measurements and exclude those
         return self._meas[meas_idx].get_dependency_uids()
 
-    def gen_mdhs(self, no_data=False, meas_idx=-1):
+    def gen_mdhs(self, no_data: bool = False, meas_idx: int = -1):
         for mdh in self._meas[meas_idx].gen_mdhs():
             yield mdh
 
-    def get_k_space_spec(self, meas_idx=-1):
+    def get_k_space_spec(self, meas_idx: int = -1):
         """Get info about the shape of the full k-space array"""
         return self._meas[meas_idx].get_k_space_spec()
 
-    def get_k_space(self, meas_idx=-1, spec=None, fixed=None, bounds=None):
+    def get_k_space(self, spec=None, fixed=None, bounds=None, meas_idx: int = -1):
         return self._meas[meas_idx].get_k_space(spec, fixed, bounds)
 
     def save(self, dest_path, prepend=None, zero_padding: bool = False):
