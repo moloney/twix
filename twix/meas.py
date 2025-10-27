@@ -7,7 +7,7 @@ import os, struct, re, logging
 from datetime import datetime
 from collections import deque
 from pathlib import Path
-from typing import Iterable, Set
+from typing import Iterable, List, Optional, Set
 
 from packaging.version import parse as LooseVersion  # for syngo version comparision
 
@@ -44,7 +44,7 @@ class Meas(object):
         self,
         src_file,
         offset,
-        length,
+        length=None,
         meas_id=None,
         file_id=None,
         protocol=None,
@@ -95,9 +95,9 @@ class Meas(object):
                     break
             else:
                 raise ValueError("Could not automatically determine version")
-
         if self._version not in (1, 2):
             raise ValueError("Unknown version: %s" % self._version)
+        log.debug("Initialized version %d Meas", self._version)
 
     @property
     def meta(self):
@@ -108,7 +108,7 @@ class Meas(object):
         evp_offset = self._offset + 8
         if self._src_file.tell() != evp_offset:
             self._src_file.seek(evp_offset)
-
+        log.debug("Reading meta data at offset: %d", evp_offset)
         evps = []
         for evp_idx in range(self._n_evps):
             name = _read_cstr(self._src_file)
@@ -122,20 +122,31 @@ class Meas(object):
             self._hdr_padding = b""
         else:
             self._hdr_padding = self._src_file.read(hdr_pad_size)
-
         # TODO: handle meta data parsing
         self._meta = evps
         return self._meta
     
+    @property
+    def length(self) -> int:
+        if self._length is None:
+            curr = self._src_file.tell()
+            self._src_file.seek(0, os.SEEK_END)
+            self._length = self._src_file.tell()
+            self._src_file.seek(curr)
+        return self._length
+
+
     def get_dependency_uids(self, dep_types: Iterable[str] = DEP_TYPES) -> Set[int]:
         """Get set of meas UID values for measurements this measurement depends on"""
         res = set()
         for meta_section, meta_str in self.meta:
             for dep_type in dep_types:
-                pattern = rf'<ParamLong."l{dep_type}UID">{{\s*([0-9]+)\s*}}'
-                matches = re.findall(pattern, meta_str)
+                pattern = rf'<ParamLong."l{dep_type}UID">\s*{{\s*([0-9]+)\s*}}'
+                matches = re.findall(pattern, meta_str, flags=re.MULTILINE)
                 for match in matches:
-                    res.add(int(match))
+                    uid = int(match)
+                    if uid != -1:
+                        res.add(uid)
         return res
 
     def gen_mdhs(self, no_data: bool = False):
@@ -375,7 +386,7 @@ class Meas(object):
         log.debug("Writing MDHs start at offset: %d", dest_file.tell())
         for mdh in self.gen_mdhs():
             mdh.write(dest_file, zero_padding)
-        padding = self._length - (dest_file.tell() - start)
+        padding = self.length - (dest_file.tell() - start)
         if padding:
             log.debug("Found padding at end of data set")
             dest_file.write(b"\x00" * padding)
@@ -407,8 +418,8 @@ class MeasFile(object):
             self._src_file = src.open("rb")
         else:
             self._src_file = src
-        self._meas = []
-        self._meas_records = None
+        self._meas: List[Meas] = []
+        self._meas_records: Optional[List[dotdict]] = None
         # On V1 files, "test" will be the header size and thus never zero while on V2
         # files it will always be zero
         (test,) = struct.unpack("<I", self._src_file.read(4))
@@ -417,7 +428,7 @@ class MeasFile(object):
                 Meas(
                     self._src_file,
                     0,
-                    os.fstat(self._src_file.fileno()).st_size,
+                    None,
                     version=version,
                 )
             )
@@ -499,7 +510,7 @@ class MeasFile(object):
                                 "meas_id": pre_meas._meas_id,
                                 "file_id": pre_meas._file_id,
                                 "offset": curr_offset,
-                                "length": pre_meas._length,
+                                "length": pre_meas.length,
                                 "patient": pre_meas._patient,
                                 "protocol": pre_meas._protocol,
                             }

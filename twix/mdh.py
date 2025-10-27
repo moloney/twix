@@ -335,7 +335,8 @@ class Mdh:
         else:
             assert version == 2            
             if eval_info_is_set(hdr.eval_info_mask, "SYNCDATA"):
-                assert hdr.used_channels == 0
+                if hdr.used_channels != 0:
+                    log.debug("Found SYNCDATA MDH with used_channels = %d", hdr.used_channels)
                 rf_data = None
                 sync_data = SyncPacket.from_file(src_file)
             else:
